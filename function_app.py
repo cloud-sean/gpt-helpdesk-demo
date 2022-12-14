@@ -8,10 +8,10 @@ import json
 import random
 import secrets
 from transformers import GPT2TokenizerFast
+from os.path import exists
 
 COMPLETIONS_MODEL = "text-davinci-003"
-openai.api_key = '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'
-
+openai.api_key = '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'
 
 MODEL_NAME = "curie"
 
@@ -107,8 +107,8 @@ def construct_prompt(question: str, context_embeddings: dict, df: pd.DataFrame) 
         chosen_sections_indexes.append(str(section_index))
             
     # Useful diagnostic information
-    print(f"Selected {len(chosen_sections)} document sections:")
-    print("\n".join(chosen_sections_indexes))
+    # print(f"Selected{len(chosen_sections)} document sections:")
+    # print("\n".join(chosen_sections_indexes))
     
     header = """Answer the question as truthfully as possible using the provided context, and if the answer is not contained within the text below, say "I don't know."\n\nContext:\n"""
     
@@ -119,7 +119,7 @@ def answer_query_with_context(
     query: str,
     df: pd.DataFrame,
     document_embeddings: dict[(str, str), np.array],
-    show_prompt: bool = False
+    show_prompt: bool = False,
 ) -> str:
     prompt = construct_prompt(
         query,
@@ -129,11 +129,14 @@ def answer_query_with_context(
     
     if show_prompt:
         print(prompt)
+    
+
 
     response = openai.Completion.create(
                 prompt=prompt,
                 **COMPLETIONS_API_PARAMS
             )
+    
     response = {
         "prompt": prompt,
         "response": response["choices"][0]["text"].strip(" \n")
@@ -149,6 +152,7 @@ def get_conversation(filename: str):
         conversation = pickle.load(handle)
     return conversation
 
+
 app = func.FunctionApp()
 
 # Learn more at aka.ms/pythonprogrammingmodel
@@ -159,31 +163,37 @@ app = func.FunctionApp()
 @app.route(route="QA")
 def main_(req: func.HttpRequest) -> func.HttpResponse:
     request_body = json.loads(req.get_body().decode('utf-8'))
-    question = request_body['question']
 
-    #check if request body contains conversation secret
-    if 'conversation_secret' in request_body:
-        conversation = get_conversation(request_body['conversation_secret'])
+    question = request_body['queryResult']['queryText']
+
+    session_id = request_body['session'].split('/')[-1]
+
+
+    if exists(f'conversation/{session_id}.pkl'):
+        conversation = get_conversation(session_id)
         question = conversation + question
+        print('follow up')
     else:
-        request_body['conversation_secret'] = secrets.token_hex(16)
+        print('not a follow up')
 
-    tmp = order_document_sections_by_query_similarity(question, context_embeddings)[:5]
-    ans = answer_query_with_context(f'{question} answer in czech', df, context_embeddings)
-    
+        
+    ans = answer_query_with_context(f'{question} answer in czech', df, context_embeddings, request_body)
     conversation = ans['prompt'] + ans['response']
+   
+    save_conversation(conversation, session_id)
     
-    save_conversation(conversation, request_body['conversation_secret'])
-
+    print('answer: ' + ans['response'])
     return_body = {
-        "answer": ans['response'],
-        "confidence": tmp[0][0],
-        "article_title": tmp[0][1][0],
-        "article_url": tmp[0][1][1],
-        "conversation_secret": request_body['conversation_secret']
-
+    "fulfillmentMessages": [
+        {
+        "text": {
+            "text": [
+            ans['response']
+            ]
+        }
+        }
+    ]
     }
-
     if ans:
         return func.HttpResponse(json.dumps(return_body), status_code=200, mimetype="application/json")
     else:
